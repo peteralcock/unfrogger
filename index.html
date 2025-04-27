@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Frog Squisher</title>
+    <style>
+        /* Basic styling for the page */
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh; /* Use min-height for flexibility */
+            margin: 0;
+            background-color: #2c3e50; /* Darker background */
+            color: #ecf0f1; /* Light text */
+            font-family: 'Arial', sans-serif; /* Simple font */
+            touch-action: none; /* Prevent default touch actions like scrolling/zooming on the body */
+            overflow: hidden; /* Hide scrollbars if canvas is too big */
+        }
+
+        /* Style the main heading */
+        h1 {
+            color: #e74c3c; /* Contrasting color */
+            margin-bottom: 10px;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        /* Style the score display */
+        #scoreBoard {
+            margin-bottom: 15px;
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #f1c40f; /* Gold color for score */
+        }
+
+        /* Style the game canvas */
+        canvas {
+            border: 4px solid #34495e; /* Border matching background */
+            background-color: #7f8c8d; /* Road color */
+            display: block;
+            /* Responsive canvas sizing */
+            max-width: 95%; /* Limit width */
+            max-height: 75vh; /* Limit height */
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); /* Add shadow for depth */
+            border-radius: 8px; /* Slightly rounded corners */
+            /* Maintain aspect ratio - adjust as needed */
+            /* aspect-ratio: 4 / 6; */ /* Example: width / height */
+        }
+
+        /* Style the instruction text */
+        #instructions {
+            margin-top: 15px;
+            font-size: 1em;
+            color: #bdc3c7; /* Lighter grey */
+            text-align: center;
+            max-width: 90%;
+        }
+
+        /* Simple message box styling (hidden by default) */
+        #messageBox {
+            display: none; /* Hidden initially */
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 20px 40px;
+            border-radius: 10px;
+            text-align: center;
+            font-size: 1.5em;
+            z-index: 100; /* Ensure it's on top */
+            border: 2px solid #f1c40f;
+        }
+         #messageBox button {
+             margin-top: 15px;
+             padding: 10px 20px;
+             font-size: 1em;
+             cursor: pointer;
+             background-color: #e74c3c;
+             color: white;
+             border: none;
+             border-radius: 5px;
+             transition: background-color 0.2s ease;
+         }
+          #messageBox button:hover {
+              background-color: #c0392b;
+          }
+
+    </style>
+</head>
+<body>
+    <h1>Frog Squisher</h1>
+    <div id="scoreBoard">Score: <span id="score">0</span></div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="instructions">Click/Touch and drag near a car to nudge it sideways!</div>
+
+    <div id="messageBox">
+        <p id="messageText"></p>
+        <button id="messageButton">OK</button>
+    </div>
+
+    <script>
+        // Get references to HTML elements
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const messageBox = document.getElementById('messageBox');
+        const messageText = document.getElementById('messageText');
+        const messageButton = document.getElementById('messageButton');
+
+        // --- Game Configuration ---
+        const FROG_SIZE = 25; // Size of the frog square
+        const CAR_WIDTH = 55; // Width of the car rectangle
+        const CAR_HEIGHT = 30; // Height of the car rectangle
+        const NUM_LANES = 5; // Number of vertical lanes cars/frogs occupy
+        let LANE_WIDTH = 80; // Initial lane width, will be updated on resize
+        const ROAD_MARKER_WIDTH = 6; // Width of the dashed lane lines
+        const FROG_SPEED = 1.8; // Pixels per frame the frog moves upwards
+        const BASE_CAR_SPEED = 2.2; // Base speed cars move downwards
+        const MAX_CAR_SPEED_VARIATION = 1.8; // Random additional speed for cars
+        const NUDGE_SENSITIVITY = 0.08; // How strongly dragging affects car velocity X
+        const DAMPING = 0.94; // Factor to slow down horizontal velocity each frame (friction/air resistance)
+        const SPAWN_INTERVAL_FROG_BASE = 120; // Base frames between frog spawns
+        const SPAWN_INTERVAL_CAR_BASE = 80; // Base frames between car spawns
+        const SPAWN_RATE_INCREASE = 0.998; // Factor to decrease spawn interval over time (difficulty)
+        const NUDGE_RADIUS = 80; // Max distance from car center to initiate a nudge
+        const MAX_FROGS = 15; // Limit the number of frogs on screen
+        const MAX_CARS = 20; // Limit the number of cars on screen
+
+        // --- Game State Variables ---
+        let score = 0;
+        let frogs = []; // Array to hold all active frog objects
+        let cars = []; // Array to hold all active car objects
+        let frameCount = 0; // Counter for frames elapsed
+        let isDragging = false; // Is the user currently clicking/touching and dragging?
+        let dragStartX = 0; // Initial X position of the drag
+        let dragStartY = 0; // Initial Y position of the drag
+        let currentDragX = 0; // Current X position during drag
+        let currentDragY = 0; // Current Y position during drag
+        let nudgedCar = null; // The specific car object being affected by the current drag
+        let lastMouseX = 0; // Store previous mouse X for delta calculation
+        let canvasWidth, canvasHeight; // Actual dimensions of the canvas
+        let spawnIntervalFrog = SPAWN_INTERVAL_FROG_BASE;
+        let spawnIntervalCar = SPAWN_INTERVAL_CAR_BASE;
+        let gameOver = false; // Flag to check if the game has ended
+        let animationFrameId = null; // Store the requestAnimationFrame ID
+
+        // --- Utility Functions ---
+
+        /**
+         * Generates a random number between min (inclusive) and max (exclusive)
+         * @param {number} min - The minimum value.
+         * @param {number} max - The maximum value.
+         * @returns {number} A random floating-point number.
+         */
+        function random(min, max) {
+            return Math.random() * (max - min) + min;
+        }
+
+        /**
+         * Resizes the canvas to fit the window while trying to maintain aspect ratio
+         * and recalculates lane widths.
+         */
+        function resizeCanvas() {
+            // Calculate desired width based on lanes
+            const desiredWidth = LANE_WIDTH * NUM_LANES;
+            // Calculate desired height (e.g., 1.5 times the width)
+            const desiredHeight = desiredWidth * 1.5;
+
+            // Get available screen space (consider padding/margins)
+            const maxWidth = window.innerWidth * 0.95;
+            const maxHeight = window.innerHeight * 0.75;
+
+            // Calculate scaling factor based on available space
+            let scale = Math.min(maxWidth / desiredWidth, maxHeight / desiredHeight);
+            scale = Math.min(scale, 1.5); // Limit maximum scaling
+
+            // Set canvas dimensions
+            canvasWidth = desiredWidth * scale;
+            canvasHeight = desiredHeight * scale;
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+
+            // Recalculate LANE_WIDTH based on the final canvas width
+            LANE_WIDTH = canvasWidth / NUM_LANES;
+
+            console.log(`Canvas resized to: ${canvasWidth.toFixed(0)}x${canvasHeight.toFixed(0)}, Lane Width: ${LANE_WIDTH.toFixed(1)}`);
+        }
+
+        /**
+         * Displays a message in the center of the screen.
+         * @param {string} text - The message to display.
+         * @param {function} [callback] - Optional function to run when the button is clicked.
+         */
+        function showMessage(text, callback) {
+            messageText.textContent = text;
+            messageBox.style.display = 'block';
+            messageButton.onclick = () => {
+                messageBox.style.display = 'none';
+                if (callback) {
+                    callback();
+                }
+            };
+        }
+
+        // --- Game Object Creation ---
+
+        /**
+         * Creates a new frog object.
+         * @returns {object} The frog object with its properties.
+         */
+        function createFrog() {
+            const lane = Math.floor(random(0, NUM_LANES));
+            // Center the frog in the lane
+            const x = lane * LANE_WIDTH + (LANE_WIDTH / 2) - (FROG_SIZE / 2);
+            return {
+                x: x,
+                y: canvasHeight, // Start just off the bottom edge
+                width: FROG_SIZE,
+                height: FROG_SIZE,
+                speedY: -FROG_SPEED, // Move upwards
+                color: '#2ecc71', // Green color
+                isAlive: true // Flag to track if the frog is active
+            };
+        }
+
+        /**
+         * Creates a new car object.
+         * @returns {object} The car object with its properties.
+         */
+        function createCar() {
+            const lane = Math.floor(random(0, NUM_LANES));
+            // Center the car in the lane
+            const x = lane * LANE_WIDTH + (LANE_WIDTH / 2) - (CAR_WIDTH / 2);
+            const speedVariation = random(0, MAX_CAR_SPEED_VARIATION);
+            return {
+                x: x,
+                y: -CAR_HEIGHT, // Start just off the top edge
+                width: CAR_WIDTH,
+                height: CAR_HEIGHT,
+                speedY: BASE_CAR_SPEED + speedVariation, // Move downwards
+                velocityX: 0, // Horizontal speed, affected by nudges
+                color: `hsl(${random(0, 360)}, 80%, 60%)`, // Random vibrant color
+                lane: lane,
+                isAlive: true // Flag to track if the car is active
+            };
+        }
+
+        // --- Input Handling ---
+
+        /**
+         * Gets the mouse or touch position relative to the canvas.
+         * @param {Event} evt - The mouse or touch event.
+         * @returns {object|null} An object {x, y} with coordinates, or null if not available.
+         */
+        function getEventPos(evt) {
+            const rect = canvas.getBoundingClientRect();
+            // Handle both mouse and touch events (use changedTouches for touchend)
+            const clientX = evt.clientX ?? evt.touches?.[0]?.clientX ?? evt.changedTouches?.[0]?.clientX;
+            const clientY = evt.clientY ?? evt.touches?.[0]?.clientY ?? evt.changedTouches?.[0]?.clientY;
+
+            if (clientX === undefined || clientY === undefined) return null; // No position data
+
+            return {
+                x: clientX - rect.left,
+                y: clientY - rect.top
+            };
+        }
+
+        /**
+         * Handles the start of a drag operation (mousedown or touchstart).
+         * @param {Event} evt - The input event.
+         */
+        function handleDragStart(evt) {
+            if (gameOver) return; // Don't handle input if game over
+            evt.preventDefault(); // Prevent default browser actions
+            const pos = getEventPos(evt);
+            if (!pos) return;
+
+            isDragging = true;
+            dragStartX = pos.x;
+            dragStartY = pos.y;
+            currentDragX = pos.x;
+            currentDragY = pos.y;
+            lastMouseX = pos.x; // Initialize last mouse X
+
+            // Find the closest car within the nudge radius
+            let closestCar = null;
+            let minDistSq = NUDGE_RADIUS * NUDGE_RADIUS; // Use radius squared for efficiency
+
+            cars.forEach(car => {
+                const carCenterX = car.x + car.width / 2;
+                const carCenterY = car.y + car.height / 2;
+                const dx = pos.x - carCenterX;
+                const dy = pos.y - carCenterY;
+                const distSq = dx * dx + dy * dy;
+
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
+                    closestCar = car;
+                }
+            });
+            nudgedCar = closestCar; // Assign the car to be nudged
+            // Optional: Add visual feedback for the nudged car (e.g., highlight)
+            // if (nudgedCar) nudgedCar.isNudged = true;
+        }
+
+        /**
+         * Handles the movement during a drag operation (mousemove or touchmove).
+         * @param {Event} evt - The input event.
+         */
+        function handleDragMove(evt) {
+            if (!isDragging || gameOver) return;
+            evt.preventDefault();
+            const pos = getEventPos(evt);
+            if (!pos) return;
+
+            currentDragX = pos.x;
+            currentDragY = pos.y;
+
+            // Apply nudge force if a car is selected
+            if (nudgedCar) {
+                // Calculate horizontal movement delta since last frame
+                const deltaX = currentDragX - lastMouseX;
+
+                // Apply force based on the *instantaneous* drag speed/direction
+                const forceX = deltaX * NUDGE_SENSITIVITY;
+
+                // Add force to the car's horizontal velocity
+                nudgedCar.velocityX += forceX;
+            }
+            // Update last mouse position for the next frame's delta calculation
+            lastMouseX = currentDragX;
+        }
+
+        /**
+         * Handles the end of a drag operation (mouseup, mouseleave, touchend, touchcancel).
+         * @param {Event} evt - The input event.
+         */
+        function handleDragEnd(evt) {
+            if (isDragging) {
+                evt.preventDefault();
+                isDragging = false;
+                // Optional: Remove visual feedback from the nudged car
+                // if (nudgedCar) nudgedCar.isNudged = false;
+                nudgedCar = null; // Stop nudging this car
+            }
+        }
+
+        // --- Game Logic Update ---
+
+        /**
+         * Updates the state of all game objects and handles interactions.
+         */
+        function update() {
+            if (gameOver) return; // Stop updates if game over
+
+            frameCount++;
+
+            // --- Spawning ---
+            // Gradually decrease spawn intervals to increase difficulty
+            spawnIntervalFrog = Math.max(30, spawnIntervalFrog * SPAWN_RATE_INCREASE); // Minimum interval 30 frames
+            spawnIntervalCar = Math.max(20, spawnIntervalCar * SPAWN_RATE_INCREASE); // Minimum interval 20 frames
+
+            // Spawn new frogs if interval met and below max count
+            if (frameCount % Math.floor(spawnIntervalFrog) === 0 && frogs.length < MAX_FROGS) {
+                frogs.push(createFrog());
+            }
+
+            // Spawn new cars if interval met and below max count
+            if (frameCount % Math.floor(spawnIntervalCar) === 0 && cars.length < MAX_CARS) {
+                // Basic check to avoid spawning directly on top of another car in the same lane
+                const newCarLane = Math.floor(random(0, NUM_LANES));
+                let canSpawn = true;
+                cars.forEach(car => {
+                    if (car.lane === newCarLane && car.y < CAR_HEIGHT * 3) { // Check if lane is clear near the top
+                        canSpawn = false;
+                    }
+                });
+                if (canSpawn) {
+                    const newCar = createCar();
+                    newCar.lane = newCarLane; // Ensure correct lane assignment
+                    newCar.x = newCarLane * LANE_WIDTH + (LANE_WIDTH / 2) - (CAR_WIDTH / 2); // Center in lane
+                    cars.push(newCar);
+                }
+            }
+
+            // --- Update Frogs ---
+            frogs.forEach((frog) => {
+                if (!frog.isAlive) return;
+                frog.y += frog.speedY;
+                // Check if frog reached the top safely (escaped)
+                if (frog.y + frog.height < 0) {
+                    frog.isAlive = false;
+                    // Optional: Implement game over or penalty for escaped frogs
+                    // gameOver = true;
+                    // showMessage(`Game Over! Frog Escaped!\nFinal Score: ${score}`, resetGame);
+                }
+            });
+
+            // --- Update Cars ---
+            cars.forEach((car) => {
+                if (!car.isAlive) return;
+
+                // Apply damping (friction) to horizontal velocity
+                car.velocityX *= DAMPING;
+
+                // Stop very small movements to prevent jitter
+                if (Math.abs(car.velocityX) < 0.05) {
+                    car.velocityX = 0;
+                }
+
+                // Update position based on velocity
+                car.x += car.velocityX;
+                car.y += car.speedY;
+
+                // Keep cars within the horizontal bounds of the road
+                const minX = 0;
+                const maxX = canvasWidth - car.width;
+                if (car.x < minX) {
+                    car.x = minX;
+                    car.velocityX *= -0.5; // Bounce slightly off the edge
+                } else if (car.x > maxX) {
+                    car.x = maxX;
+                    car.velocityX *= -0.5; // Bounce slightly off the edge
+                }
+
+                // Update car's current lane based on center (optional, for logic/spawning)
+                car.lane = Math.floor((car.x + car.width / 2) / LANE_WIDTH);
+                car.lane = Math.max(0, Math.min(NUM_LANES - 1, car.lane)); // Clamp lane value
+
+
+                // Remove cars that go off the bottom edge
+                if (car.y > canvasHeight) {
+                    car.isAlive = false;
+                }
+            });
+
+            // --- Collision Detection (Car vs Frog) ---
+            // Use nested loops, checking only alive objects
+            cars.forEach(car => {
+                if (!car.isAlive) return;
+                frogs.forEach(frog => {
+                    if (!frog.isAlive) return;
+
+                    // Simple AABB (Axis-Aligned Bounding Box) collision check
+                    if (
+                        car.x < frog.x + frog.width &&
+                        car.x + car.width > frog.x &&
+                        car.y < frog.y + frog.height &&
+                        car.y + car.height > frog.y
+                    ) {
+                        // Collision detected!
+                        frog.isAlive = false; // Frog is squished
+                        score++; // Increase score
+                        scoreElement.textContent = score; // Update score display
+                        // Optional: Add visual effect (e.g., splat animation)
+                        // Optional: Add sound effect
+                        // Optional: Remove car on hit? car.isAlive = false;
+                    }
+                });
+            });
+
+            // --- Cleanup ---
+            // Filter out objects marked as not alive
+            frogs = frogs.filter(frog => frog.isAlive);
+            cars = cars.filter(car => car.isAlive);
+        }
+
+        // --- Drawing Functions ---
+
+        /**
+         * Draws the road background and lane markers.
+         */
+        function drawBackground() {
+            // Road color is set as canvas background
+            // Draw dashed lane markers
+            ctx.strokeStyle = '#bdc3c7'; // Light grey for lines
+            ctx.lineWidth = ROAD_MARKER_WIDTH;
+            ctx.setLineDash([25, 20]); // Dash pattern: 25px line, 20px gap
+
+            for (let i = 1; i < NUM_LANES; i++) {
+                const x = i * LANE_WIDTH;
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvasHeight);
+                ctx.stroke();
+            }
+            ctx.setLineDash([]); // Reset dash pattern to solid lines
+        }
+
+        /**
+         * Draws all active game objects (cars and frogs).
+         */
+        function drawObjects() {
+            // Draw Cars
+            cars.forEach(car => {
+                // Simple car body
+                ctx.fillStyle = car.color;
+                ctx.fillRect(car.x, car.y, car.width, car.height);
+
+                // Add simple details (windows, wheels) for visual flair
+                // Windshield
+                ctx.fillStyle = 'rgba(173, 216, 230, 0.7)'; // Light blue, semi-transparent
+                ctx.fillRect(car.x + car.width * 0.1, car.y + car.height * 0.1, car.width * 0.8, car.height * 0.3);
+
+                // Wheels (simple rectangles)
+                ctx.fillStyle = '#34495e'; // Dark grey
+                const wheelWidth = car.width * 0.2;
+                const wheelHeight = car.height * 0.25;
+                // Front wheels
+                ctx.fillRect(car.x - wheelWidth * 0.3, car.y + car.height * 0.1, wheelWidth, wheelHeight);
+                ctx.fillRect(car.x + car.width - wheelWidth * 0.7, car.y + car.height * 0.1, wheelWidth, wheelHeight);
+                // Rear wheels
+                ctx.fillRect(car.x - wheelWidth * 0.3, car.y + car.height * 0.65, wheelWidth, wheelHeight);
+                ctx.fillRect(car.x + car.width - wheelWidth * 0.7, car.y + car.height * 0.65, wheelWidth, wheelHeight);
+
+                 // Highlight if being nudged (optional)
+                // if (car.isNudged) {
+                //     ctx.strokeStyle = 'yellow';
+                //     ctx.lineWidth = 2;
+                //     ctx.strokeRect(car.x, car.y, car.width, car.height);
+                // }
+            });
+
+            // Draw Frogs
+            frogs.forEach(frog => {
+                // Frog body
+                ctx.fillStyle = frog.color;
+                ctx.fillRect(frog.x, frog.y, frog.width, frog.height);
+
+                // Simple eyes
+                const eyeSize = frog.width * 0.2;
+                const eyeOffset = frog.width * 0.15;
+                ctx.fillStyle = 'white';
+                ctx.fillRect(frog.x + eyeOffset, frog.y + eyeOffset, eyeSize, eyeSize);
+                ctx.fillRect(frog.x + frog.width - eyeOffset - eyeSize, frog.y + eyeOffset, eyeSize, eyeSize);
+                // Pupils
+                ctx.fillStyle = 'black';
+                ctx.fillRect(frog.x + eyeOffset + eyeSize * 0.25, frog.y + eyeOffset + eyeSize * 0.25, eyeSize * 0.5, eyeSize * 0.5);
+                ctx.fillRect(frog.x + frog.width - eyeOffset - eyeSize * 0.75, frog.y + eyeOffset + eyeSize * 0.25, eyeSize * 0.5, eyeSize * 0.5);
+            });
+        }
+
+        // --- Game Loop ---
+
+        /**
+         * The main game loop, called repeatedly using requestAnimationFrame.
+         */
+        function gameLoop() {
+            // Clear the entire canvas
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            // Update game state (movement, spawning, collisions)
+            update();
+
+            // Draw game elements
+            drawBackground();
+            drawObjects();
+
+            // Request the next frame, storing the ID
+            if (!gameOver) {
+                animationFrameId = requestAnimationFrame(gameLoop);
+            }
+        }
+
+        // --- Initialization and Reset ---
+
+        /**
+         * Resets the game state to start a new game.
+         */
+        function resetGame() {
+            console.log("Resetting game...");
+            score = 0;
+            frogs = [];
+            cars = [];
+            frameCount = 0;
+            spawnIntervalFrog = SPAWN_INTERVAL_FROG_BASE;
+            spawnIntervalCar = SPAWN_INTERVAL_CAR_BASE;
+            scoreElement.textContent = score;
+            gameOver = false;
+            nudgedCar = null;
+            isDragging = false;
+
+            // Cancel any existing animation frame to prevent duplicates
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            // Start the game loop again
+            gameLoop();
+        }
+
+        /**
+         * Initializes the game setup, event listeners, and starts the loop.
+         */
+        function init() {
+            console.log("Initializing game...");
+            // Set initial canvas size
+            resizeCanvas();
+
+            // Add event listeners for input
+            canvas.addEventListener('mousedown', handleDragStart, { passive: false });
+            canvas.addEventListener('mousemove', handleDragMove, { passive: false });
+            canvas.addEventListener('mouseup', handleDragEnd, { passive: false });
+            canvas.addEventListener('mouseleave', handleDragEnd, { passive: false }); // Stop drag if mouse leaves canvas
+
+            // Add touch event listeners
+            canvas.addEventListener('touchstart', handleDragStart, { passive: false });
+            canvas.addEventListener('touchmove', handleDragMove, { passive: false });
+            canvas.addEventListener('touchend', handleDragEnd, { passive: false });
+            canvas.addEventListener('touchcancel', handleDragEnd, { passive: false });
+
+            // Add listener for window resize
+            window.addEventListener('resize', resizeCanvas);
+
+            // Add listener for the message box button (initially for reset)
+            messageButton.onclick = resetGame; // Default action is reset
+
+            // Start the game
+            resetGame(); // Use resetGame to start
+        }
+
+        // --- Start the game ---
+        // Wait for the DOM to be fully loaded before initializing
+        window.addEventListener('load', init);
+
+    </script>
+</body>
+</html>
